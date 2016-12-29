@@ -10,9 +10,10 @@ use std::ops::Deref;
 use std::cell::RefCell;
 use std::clone::Clone;
 use std::rc::Rc;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::char;
 use std::iter::IntoIterator;
+use std::string::FromUtf8Error;
 
 mod webplatform {
     pub use emscripten_asm_const;
@@ -67,6 +68,129 @@ extern "C" {
     pub fn emscripten_asm_const_int(s: *const libc::c_char, ...) -> libc::c_int;
     pub fn emscripten_pause_main_loop();
     pub fn emscripten_set_main_loop(m: extern fn(), fps: libc::c_int, infinite: libc::c_int);
+}
+
+#[derive(Debug, Clone)]
+pub struct XmlHttpRequest {
+    id: libc::c_int,
+    pub response: Vec<u8>,
+    pub status: u16,
+}
+
+#[derive(Debug, Clone)]
+pub enum XmlHttpRequestSuccessStatus {
+    OK,
+    Created,
+    NoContent,
+    PartialContent,
+}
+
+#[derive(Debug, Clone)]
+pub enum XmlHttpRequestRedirectStatus {
+    MovedPermanently(Option<String>),
+    Found(Option<String>),
+    SeeOther(Option<String>),
+    NotModified,
+    TemporaryRedirect(Option<String>),
+    PermanentRedirect(Option<String>),
+}
+
+#[derive(Debug, Clone)]
+pub enum XmlHttpRequestClientErrorStatus {
+    BadRequest,
+    Unauthorized,
+    Forbidden,
+    NotFound,
+    MethodNotAllowed,
+    NotAcceptable,
+}
+
+#[derive(Debug, Clone)]
+pub enum XmlHttpRequestServerErrorStatus {
+    InternalServerError,
+    NotImplemented,
+    BadGateway,
+    ServiceNotAvailable,
+}
+
+#[derive(Debug, Clone)]
+pub enum XmlHttpRequestOk {
+    XmlHttpRequestSuccess(XmlHttpRequestSuccessStatus),
+    XmlHttpRequestRedirect(XmlHttpRequestRedirectStatus),
+    Other(u16, Option<String>),
+}
+
+impl XmlHttpRequestOk {
+    fn from_status(status: u16, url: Option<String>) -> XmlHttpRequestOk {
+        match status {
+            200 => XmlHttpRequestOk::XmlHttpRequestSuccess(XmlHttpRequestSuccessStatus::OK),
+            201 => XmlHttpRequestOk::XmlHttpRequestSuccess(XmlHttpRequestSuccessStatus::Created),
+            204 => XmlHttpRequestOk::XmlHttpRequestSuccess(XmlHttpRequestSuccessStatus::NoContent),
+            206 => XmlHttpRequestOk::XmlHttpRequestSuccess(XmlHttpRequestSuccessStatus::PartialContent),
+            301 => XmlHttpRequestOk::XmlHttpRequestRedirect(XmlHttpRequestRedirectStatus::MovedPermanently(url)),
+            302 => XmlHttpRequestOk::XmlHttpRequestRedirect(XmlHttpRequestRedirectStatus::Found(url)),
+            303 => XmlHttpRequestOk::XmlHttpRequestRedirect(XmlHttpRequestRedirectStatus::SeeOther(url)),
+            304 => XmlHttpRequestOk::XmlHttpRequestRedirect(XmlHttpRequestRedirectStatus::NotModified),
+            307 => XmlHttpRequestOk::XmlHttpRequestRedirect(XmlHttpRequestRedirectStatus::TemporaryRedirect(url)),
+            308 => XmlHttpRequestOk::XmlHttpRequestRedirect(XmlHttpRequestRedirectStatus::PermanentRedirect(url)),
+            status => XmlHttpRequestOk::Other(status, url),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum XmlHttpRequestErr {
+    XmlHttpRequestClientError(XmlHttpRequestClientErrorStatus),
+    XmlHttpRequestServerError(XmlHttpRequestServerErrorStatus),
+    Other(u16),
+}
+
+impl XmlHttpRequestErr {
+    fn from_status(status: u16) -> XmlHttpRequestErr {
+        match status {
+            400 => XmlHttpRequestErr::XmlHttpRequestClientError(XmlHttpRequestClientErrorStatus::BadRequest),
+            401 => XmlHttpRequestErr::XmlHttpRequestClientError(XmlHttpRequestClientErrorStatus::Unauthorized),
+            403 => XmlHttpRequestErr::XmlHttpRequestClientError(XmlHttpRequestClientErrorStatus::Forbidden),
+            404 => XmlHttpRequestErr::XmlHttpRequestClientError(XmlHttpRequestClientErrorStatus::NotFound),
+            405 => XmlHttpRequestErr::XmlHttpRequestClientError(XmlHttpRequestClientErrorStatus::MethodNotAllowed),
+            406 => XmlHttpRequestErr::XmlHttpRequestClientError(XmlHttpRequestClientErrorStatus::NotAcceptable),
+            500 => XmlHttpRequestErr::XmlHttpRequestServerError(XmlHttpRequestServerErrorStatus::InternalServerError),
+            501 => XmlHttpRequestErr::XmlHttpRequestServerError(XmlHttpRequestServerErrorStatus::NotImplemented),
+            502 => XmlHttpRequestErr::XmlHttpRequestServerError(XmlHttpRequestServerErrorStatus::BadGateway),
+            503 => XmlHttpRequestErr::XmlHttpRequestServerError(XmlHttpRequestServerErrorStatus::ServiceNotAvailable),
+            status => XmlHttpRequestErr::Other(status),
+        }
+    }
+}
+
+impl XmlHttpRequest {
+    pub fn as_result(&self) -> Result<XmlHttpRequestOk, XmlHttpRequestErr> {
+        if self.status >= 400 {
+            Err(XmlHttpRequestErr::from_status(self.status))
+        } else {
+            Ok(XmlHttpRequestOk::from_status(self.status, self.get_location()))
+        }
+    }
+
+    pub fn response_text(&self) -> Result<String, FromUtf8Error>{
+        String::from_utf8(self.response.clone())
+
+    }
+
+    fn get_location(&self) -> Option<String> {
+        let a = js! { (self.id) b"\
+            var str = WEBPLATFORM.rs_refs[$0].getResponseHeader('Location');\
+            if (str == null) return -1;\
+            return allocate(intArrayFromString(str), 'i8', ALLOC_STACK);\
+        \0" };
+        if a == -1 {
+            None
+        } else {
+            Some(unsafe {
+                str::from_utf8(CStr::from_ptr(a as *const libc::c_char).to_bytes()).unwrap().to_owned()
+            })
+        }
+    }
 }
 
 pub struct HtmlNode<'a> {
@@ -126,7 +250,7 @@ pub struct Event<'a> {
     pub target: Option<HtmlNode<'a>>
 }
 
-extern fn rust_caller<F: FnMut(Event)>(a: *const libc::c_void, docptr: *const libc::c_void, id: i32) {
+extern fn event_rust_caller<F: FnMut(Event)>(a: *const libc::c_void, docptr: *const libc::c_void, id: i32) {
     let v:&mut F = unsafe { mem::transmute(a) };
     v(Event {
         target: if id == -1 {
@@ -140,6 +264,55 @@ extern fn rust_caller<F: FnMut(Event)>(a: *const libc::c_void, docptr: *const li
         // target: None,
     });
 }
+
+extern fn ajax_rust_caller<'a, F: FnMut(XmlHttpRequest)>(a: *const libc::c_void, id: libc::c_int, response: *const libc::c_void, status: u16, doc: *const Document<'a>) {
+    let v:&mut F = unsafe { mem::transmute(a) };
+    let r = unsafe {
+        CStr::from_ptr(response as *const libc::c_char).to_bytes().to_vec()
+    };
+    let mut request = unsafe {
+        (&*doc).requests.borrow_mut().remove(&id).unwrap()
+    };
+    request.status = status;
+    request.response = r;
+    v(request);
+}
+
+pub fn ajax_get<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, f: F) {
+    let request = XmlHttpRequest {
+        id: js! { b"\
+            var request = new XMLHttpRequest();\
+            return WEBPLATFORM.rs_refs.push(request) - 1;\
+        \0" },
+        response: Vec::new(),
+        status: 0,
+    };
+
+    let b = Box::new(f);
+    let a = &*b as *const _;
+    js! { (request.id, url,
+        a as *const libc::c_void,
+        ajax_rust_caller::<F> as *const libc::c_void,
+        doc as *const libc::c_void
+    ) b"\
+    var request = WEBPLATFORM.rs_refs[$0];\
+    request.open('GET', UTF8ToString($1), true);\
+    var tostr = function(s) { return allocate(intArrayFromString(s), 'i8', ALLOC_STACK); };\
+    request.onload = function() {\
+        Runtime.dynCall('viiiii', $3, [$2, $0, tostr(request.responseText), request.status, $4])\
+    };\
+    request.onerror = function() {\
+        Runtime.dynCall('viiiii', $3, [$2, $0, tostr('error'), 65535, $4])\
+    };\
+    request.send();\
+    \0" };
+
+    unsafe {
+        (&*doc).requests.borrow_mut().insert(request.id, request);
+        (&*doc).ajax.borrow_mut().push(b);
+    }
+}
+
 
 impl<'a> HtmlNode<'a> {
     pub fn tagname(&self) -> String {
@@ -299,7 +472,7 @@ impl<'a> HtmlNode<'a> {
             let b = Box::new(f);
             let a = &*b as *const _;
             js! { (self.id, s, a as *const libc::c_void,
-                rust_caller::<F> as *const libc::c_void,
+                event_rust_caller::<F> as *const libc::c_void,
                 self.doc as *const libc::c_void)
                 b"\
                 WEBPLATFORM.rs_refs[$0].addEventListener(UTF8ToString($1), function (e) {\
@@ -315,7 +488,7 @@ impl<'a> HtmlNode<'a> {
             let b = Box::new(f);
             let a = &*b as *const _;
             js! { (self.id, s, a as *const libc::c_void,
-                rust_caller::<F> as *const libc::c_void,
+                event_rust_caller::<F> as *const libc::c_void,
                 self.doc as *const libc::c_void)
                 b"\
                 WEBPLATFORM.rs_refs[$0].addEventListener(UTF8ToString($1), function (e) {\
@@ -342,6 +515,8 @@ pub fn alert(s: &str) {
 
 pub struct Document<'a> {
     refs: Rc<RefCell<Vec<Box<FnMut(Event<'a>) + 'a>>>>,
+    ajax: Rc<RefCell<Vec<Box<FnMut(XmlHttpRequest) + 'a>>>>,
+    requests: Rc<RefCell<HashMap<i32, XmlHttpRequest>>>,
 }
 
 impl<'a> Document<'a> {
@@ -378,7 +553,7 @@ impl<'a> Document<'a> {
             let b = Box::new(f);
             let a = &*b as *const _;
             js! { (0, s, a as *const libc::c_void,
-                rust_caller::<F> as *const libc::c_void,
+                event_rust_caller::<F> as *const libc::c_void,
                 &*self as *const _ as *const libc::c_void)
                 b"\
                 window.addEventListener(UTF8ToString($1), function (e) {\
@@ -500,6 +675,8 @@ pub fn init<'a>() -> Document<'a> {
     \0" };
     Document {
         refs: Rc::new(RefCell::new(Vec::new())),
+        ajax: Rc::new(RefCell::new(Vec::new())),
+        requests: Rc::new(RefCell::new(HashMap::new())),
     }
 }
 
