@@ -259,7 +259,7 @@ impl<'a> Event<'a> {
     }
 }
 
-extern fn event_rust_caller<F: FnMut(Event)>(a: *const libc::c_void, docptr: *const libc::c_void, id: i32) {
+extern fn event_rust_caller<F: FnMut(Event)>(a: *const libc::c_void, docptr: *const libc::c_void, id: i32, event: i32) {
     let v:&mut F = unsafe { mem::transmute(a) };
     v(Event {
         event: event,
