@@ -288,7 +288,7 @@ extern fn ajax_rust_caller<'a, F: FnMut(XmlHttpRequest)>(a: *const libc::c_void,
     v(request);
 }
 
-pub fn ajax_get<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, f: F) {
+fn ajax<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, method: &str, data: Option<&str>, f: F) {
     let request = XmlHttpRequest {
         id: js! { b"\
             var request = new XMLHttpRequest();\
@@ -300,21 +300,23 @@ pub fn ajax_get<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url
 
     let b = Box::new(f);
     let a = &*b as *const _;
-    js! { (request.id, url,
+    js! { (request.id, url, method,
         a as *const libc::c_void,
         ajax_rust_caller::<F> as *const libc::c_void,
-        doc as *const libc::c_void
+        doc as *const libc::c_void,
+        data.unwrap_or("")
     ) b"\
     var request = WEBPLATFORM.rs_refs[$0];\
-    request.open('GET', UTF8ToString($1), true);\
+    request.open(UTF8ToString($2), UTF8ToString($1), true);\
     var tostr = function(s) { return allocate(intArrayFromString(s), 'i8', ALLOC_STACK); };\
     request.onload = function() {\
-        Runtime.dynCall('viiiii', $3, [$2, $0, tostr(request.responseText), request.status, $4])\
+        Runtime.dynCall('viiiii', $4, [$3, $0, tostr(request.responseText), request.status, $5])\
     };\
     request.onerror = function() {\
-        Runtime.dynCall('viiiii', $3, [$2, $0, tostr('error'), 65535, $4])\
+        Runtime.dynCall('viiiii', $4, [$3, $0, tostr('error'), 65535, $5])\
     };\
-    request.send();\
+    var data = UTF8ToString($6);\
+    request.send(data ? data : null);\
     \0" };
 
     unsafe {
@@ -323,6 +325,13 @@ pub fn ajax_get<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url
     }
 }
 
+pub fn ajax_get<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, f: F) {
+    ajax(doc, url, "GET", None, f)
+}
+
+pub fn ajax_post<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, data: Option<&str>, f: F) {
+    ajax(doc, url, "POST", data, f)
+}
 
 impl<'a> HtmlNode<'a> {
     pub fn tagname(&self) -> String {
