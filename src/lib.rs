@@ -261,6 +261,12 @@ impl<'a> HtmlNode<'a> {
         \0" };
     }
 
+    pub fn prop_del(&self, s: &str) {
+        js! { (self.id, s) b"\
+            delete WEBPLATFORM.rs_refs[$0][UTF8ToString($1)];\
+        \0" };
+    }
+
     pub fn prop_get_i32(&self, s: &str) -> i32 {
         return js! { (self.id, s) b"\
             return Number(WEBPLATFORM.rs_refs[$0][UTF8ToString($1)])\
