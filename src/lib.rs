@@ -20,7 +20,7 @@ mod webplatform {
     pub use emscripten_asm_const_int;
 }
 
-trait Interop {
+pub trait Interop {
     fn as_int(self, _:&mut Vec<CString>) -> libc::c_int;
 }
 
@@ -259,7 +259,7 @@ impl<'a> Event<'a> {
     }
 }
 
-extern fn event_rust_caller<F: FnMut(Event)>(a: *const libc::c_void, docptr: *const libc::c_void, id: i32, event: i32) {
+extern fn event_rust_caller<F: FnMut(Event) + Sync + Send>(a: *const libc::c_void, docptr: *const libc::c_void, id: i32, event: i32) {
     let v:&mut F = unsafe { mem::transmute(a) };
     v(Event {
         event: event,
@@ -275,7 +275,7 @@ extern fn event_rust_caller<F: FnMut(Event)>(a: *const libc::c_void, docptr: *co
     });
 }
 
-extern fn ajax_rust_caller<'a, F: FnMut(XmlHttpRequest)>(a: *const libc::c_void, id: libc::c_int, response: *const libc::c_void, status: u16, doc: *const Document<'a>) {
+extern fn ajax_rust_caller<'a, F: FnMut(XmlHttpRequest) + Sync + Send>(a: *const libc::c_void, id: libc::c_int, response: *const libc::c_void, status: u16, doc: *const Document<'a>) {
     let v:&mut F = unsafe { mem::transmute(a) };
     let r = unsafe {
         CStr::from_ptr(response as *const libc::c_char).to_bytes().to_vec()
@@ -288,7 +288,7 @@ extern fn ajax_rust_caller<'a, F: FnMut(XmlHttpRequest)>(a: *const libc::c_void,
     v(request);
 }
 
-fn ajax<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, method: &str, data: Option<&str>, f: F) {
+fn ajax<'a, F: FnMut(XmlHttpRequest) + Sync + Send + 'a>(doc: *const Document<'a>, url: &str, method: &str, data: Option<&str>, f: F) {
     let request = XmlHttpRequest {
         id: js! { b"\
             var request = new XMLHttpRequest();\
@@ -325,11 +325,11 @@ fn ajax<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, 
     }
 }
 
-pub fn ajax_get<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, f: F) {
+pub fn ajax_get<'a, F: FnMut(XmlHttpRequest) + Sync + Send + 'a>(doc: *const Document<'a>, url: &str, f: F) {
     ajax(doc, url, "GET", None, f)
 }
 
-pub fn ajax_post<'a, F: FnMut(XmlHttpRequest) + 'a>(doc: *const Document<'a>, url: &str, data: Option<&str>, f: F) {
+pub fn ajax_post<'a, F: FnMut(XmlHttpRequest) + Sync + Send + 'a>(doc: *const Document<'a>, url: &str, data: Option<&str>, f: F) {
     ajax(doc, url, "POST", data, f)
 }
 
@@ -492,7 +492,7 @@ impl<'a> HtmlNode<'a> {
         \0" };
     }
 
-    pub fn on<F: FnMut(Event) + 'a>(&self, s: &str, f: F) {
+    pub fn on<F: FnMut(Event) + Sync + Send + 'a>(&self, s: &str, f: F) {
         unsafe {
             let b = Box::new(f);
             let a = &*b as *const _;
@@ -508,7 +508,7 @@ impl<'a> HtmlNode<'a> {
         }
     }
 
-    pub fn captured_on<F: FnMut(Event) + 'a>(&self, s: &str, f: F) {
+    pub fn captured_on<F: FnMut(Event) + Sync + Send + 'a>(&self, s: &str, f: F) {
         unsafe {
             let b = Box::new(f);
             let a = &*b as *const _;
@@ -539,10 +539,13 @@ pub fn alert(s: &str) {
 }
 
 pub struct Document<'a> {
-    refs: Rc<RefCell<Vec<Box<FnMut(Event<'a>) + 'a>>>>,
-    ajax: Rc<RefCell<Vec<Box<FnMut(XmlHttpRequest) + 'a>>>>,
+    refs: Rc<RefCell<Vec<Box<FnMut(Event<'a>) + Sync + Send + 'a>>>>,
+    ajax: Rc<RefCell<Vec<Box<FnMut(XmlHttpRequest) + Sync + Send + 'a>>>>,
     requests: Rc<RefCell<HashMap<i32, XmlHttpRequest>>>,
 }
+
+unsafe impl<'a> Sync for Document<'a> {}
+unsafe impl<'a> Send for Document<'a> {}
 
 impl<'a> Document<'a> {
     pub fn element_create<'b>(&'b self, s: &str) -> Option<HtmlNode<'a>> {
@@ -573,7 +576,7 @@ impl<'a> Document<'a> {
         }
     }
 
-    pub fn on<F: FnMut(Event) + 'a>(&self, s: &str, f: F) {
+    pub fn on<F: FnMut(Event) + Sync + Send + 'a>(&self, s: &str, f: F) {
         unsafe {
             let b = Box::new(f);
             let a = &*b as *const _;
